@@ -1,0 +1,100 @@
+# ============================================================
+# Bulk OneDrive Site Provisioning
+# Provisions OneDrive for users listed in a CSV file
+# without requiring user interaction.
+#
+# CSV Format (required column header): UserPrincipalName
+# Example: upn_list.csv
+#   UserPrincipalName
+#   user1@contoso.com
+#   user2@contoso.com
+# ============================================================
+
+# ---- CONFIG ------------------------------------------------
+$CsvPath        = "C:\Scripts\upn_list.csv"         # Path to your CSV file
+$AdminUrl       = "https://contoso-admin.sharepoint.com"  # SPO Admin Center URL
+$LogPath        = "C:\Scripts\OneDrive_Provision_Log.csv" # Output log path
+# ------------------------------------------------------------
+
+# Requires PnP.PowerShell or Microsoft.Online.SharePoint.PowerShell
+# This script uses the SPO Management Shell module.
+# Install if needed: Install-Module Microsoft.Online.SharePoint.PowerShell
+
+Import-Module Microsoft.Online.SharePoint.PowerShell -ErrorAction Stop
+
+# Connect to SharePoint Online Admin
+Write-Host "Connecting to SharePoint Online..." -ForegroundColor Cyan
+Connect-SPOService -Url $AdminUrl
+
+# Load CSV
+if (-not (Test-Path $CsvPath)) {
+    Write-Error "CSV file not found at path: $CsvPath"
+    exit 1
+}
+
+$users = Import-Csv -Path $CsvPath
+
+if (-not ($users | Get-Member -Name "UserPrincipalName" -ErrorAction SilentlyContinue)) {
+    Write-Error "CSV must contain a 'UserPrincipalName' column header."
+    exit 1
+}
+
+Write-Host "Loaded $($users.Count) user(s) from CSV." -ForegroundColor Cyan
+
+# Init log
+$log = @()
+
+foreach ($user in $users) {
+    $upn = $user.UserPrincipalName.Trim()
+
+    if ([string]::IsNullOrWhiteSpace($upn)) {
+        Write-Warning "Skipping empty row."
+        continue
+    }
+
+    try {
+        Write-Host "Provisioning OneDrive for: $upn" -ForegroundColor Yellow
+
+        Request-SPOPersonalSite -UserEmails $upn -NoWait
+
+        Write-Host "  -> Request submitted successfully." -ForegroundColor Green
+        $log += [PSCustomObject]@{
+            UserPrincipalName = $upn
+            Status            = "Submitted"
+            Timestamp         = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+            Error             = ""
+        }
+    }
+    catch {
+        Write-Warning "  -> Failed for $upn`: $_"
+        $log += [PSCustomObject]@{
+            UserPrincipalName = $upn
+            Status            = "Failed"
+            Timestamp         = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+            Error             = $_.Exception.Message
+        }
+    }
+}
+
+# Export log
+$log | Export-Csv -Path $LogPath -NoTypeInformation -Encoding UTF8
+Write-Host "`nProvisioning complete. Log saved to: $LogPath" -ForegroundColor Cyan
+
+# Optional: Verify provisioned sites
+# Uncomment the block below to confirm site URLs after provisioning.
+# Note: Sites may take a few minutes to fully provision after submission.
+
+<#
+Write-Host "`nVerifying provisioned sites..." -ForegroundColor Cyan
+foreach ($entry in $log | Where-Object { $_.Status -eq "Submitted" }) {
+    $upn = $entry.UserPrincipalName
+    $siteUrl = "https://contoso-my.sharepoint.com/personal/" + ($upn -replace "[@.]", "_")
+    try {
+        $site = Get-SPOSite -Identity $siteUrl -ErrorAction Stop
+        Write-Host "  VERIFIED: $siteUrl - Status: $($site.Status)" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  NOT YET READY: $siteUrl" -ForegroundColor Yellow
+    }
+}
+#>
